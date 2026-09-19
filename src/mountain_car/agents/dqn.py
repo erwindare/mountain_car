@@ -40,10 +40,16 @@ class QNetwork(nn.Module):
 
     def __init__(self, state_dim: int, action_dim: int, hidden: int = 128) -> None:
         super().__init__()
-        raise NotImplementedError("EXERCISE 2a: build the Q-network")
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, action_dim),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("EXERCISE 2a: implement forward()")
+        return self.net(x)
 
 
 # ── Replay buffer ────────────────────────────────────────────────────
@@ -92,6 +98,7 @@ class DQNAgent:
         epsilon_start: float = 1.0,
         epsilon_end: float = 0.01,
         epsilon_decay: float = 0.995,
+        exploration_steps: int = 20,
         batch_size: int = 64,
         buffer_capacity: int = 100_000,
         target_update_freq: int = 10,
@@ -103,6 +110,9 @@ class DQNAgent:
         self.epsilon = epsilon_start
         self.epsilon_end = epsilon_end
         self.epsilon_decay = epsilon_decay
+        self.exploration_steps = exploration_steps
+        self._exploration_action: int | None = None
+        self._exploration_steps_left = 0
         self.batch_size = batch_size
         self.buffer_capacity = buffer_capacity
         self.target_update_freq = target_update_freq
@@ -146,8 +156,14 @@ class DQNAgent:
         from gentle to nearly-the-answer -- take only as many as you need. Try
         to diagnose it from your own measurements first.
         """
-        if not deterministic and random.random() < self.epsilon:
-            return random.randrange(self.action_dim)
+        if not deterministic:
+            if self._exploration_steps_left > 0:
+                self._exploration_steps_left -= 1
+                return self._exploration_action  # type: ignore[return-value]
+            if random.random() < self.epsilon:
+                self._exploration_action = random.randrange(self.action_dim)
+                self._exploration_steps_left = self.exploration_steps - 1
+                return self._exploration_action
         with torch.no_grad():
             t = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
             return int(self.q_net(t).argmax(dim=1).item())
@@ -197,7 +213,18 @@ class DQNAgent:
         #      Tip: zero_grad() -> backward() -> step(), in that order.
         #
         # Return the scalar loss value (.item()).
-        raise NotImplementedError("EXERCISE 2b: implement the DQN learning step")
+        current_q = self.q_net(states_t).gather(1, actions_t)
+
+        with torch.no_grad():
+            next_q = self.target_net(next_states_t).max(dim=1, keepdim=True).values
+            target_q = rewards_t + self.gamma * (1.0 - terminateds_t) * next_q
+
+        loss = self.loss_fn(current_q, target_q)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        return loss.item()
 
     # ── training loop ─────────────────────────────────────────────────
 
@@ -207,6 +234,8 @@ class DQNAgent:
 
         for episode in range(1, total_episodes + 1):
             obs, _ = env.reset()
+            self._exploration_action = None
+            self._exploration_steps_left = 0
             total_reward = 0.0
             done = False
 
@@ -251,6 +280,7 @@ class DQNAgent:
         "gamma",
         "epsilon_end",
         "epsilon_decay",
+        "exploration_steps",
         "batch_size",
         "buffer_capacity",
         "target_update_freq",
